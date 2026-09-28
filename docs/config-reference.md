@@ -50,6 +50,8 @@ For Codex-backed Ouroboros workflows:
 | Consensus simple voting | `consensus.models` |
 | Consensus deliberative roles | `consensus.advocate_model`, `consensus.devil_model`, `consensus.judge_model` |
 
+`execution.default_model` covers the EXECUTE-stage planning roles (`atomicity`, `decomposition`, `agent_runtime_implementation`) alongside Execute-stage runtime calls. An explicit model id (or `OUROBOROS_EXECUTION_MODEL`) pins those roles. When it is unset or set to `default`/`current`, CLI backends choose their own default; LiteLLM retains its provider-qualified semantic model because it has no model-free default.
+
 > **Recommended baseline:** use **Use Codex default model**. Setup assigns each Ouroboros role a per-invocation reasoning effort (fast: low, standard: medium, deep: high, frontier: xhigh) without pinning a Codex model, so Codex's current default remains in control.
 
 ### Portable Task Profiles
