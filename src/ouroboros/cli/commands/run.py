@@ -278,6 +278,12 @@ def _detect_project_root_from_seed_path(seed_file: Path, *, max_levels: int = 6)
     return None
 
 
+def _in_global_seed_store(seed_file: Path) -> bool:
+    """Whether ``seed_file`` lives in the global Seed store, ``~/.ouroboros/seeds``."""
+    store = (Path.home() / ".ouroboros" / "seeds").resolve()
+    return seed_file.resolve().is_relative_to(store)
+
+
 def _resolve_cli_project_dir(
     seed: "Seed",
     seed_file: Path,
@@ -292,7 +298,8 @@ def _resolve_cli_project_dir(
     the Seed does not say where it belongs. Callers that hold a better answer
     than "wherever the file sits" pass it — `init` passes the directory the
     interview was run from — so a Seed written to the global store cannot turn
-    that store into a workspace. It stays a *fallback*: an explicit
+    that store into a workspace. Without one, a Seed in the global store uses
+    the current directory for the same reason. It stays a *fallback*: an explicit
     ``project_dir``, Seed metadata, and a valid brownfield target all still win,
     and every one of those decisions is made here, once.
     """
@@ -311,7 +318,15 @@ def _resolve_cli_project_dir(
         return _directory_for_runtime(metadata_project_dir)
 
     target_dir = _resolve_brownfield_target_dir(seed_data)
-    stable_base = target_dir or seed_base
+    # The global store holds Seeds for every project, so its folder says
+    # nothing about where this one belongs; the directory the command runs
+    # from does, as for `init` (`ouroboros run ~/.ouroboros/seeds/<id>.yaml`
+    # is the documented terminal flow).
+    global_seed = (
+        detected_root is None and fallback_dir is None and _in_global_seed_store(seed_file)
+    )
+    project_root = detected_root or (Path.cwd().resolve() if global_seed else None)
+    stable_base = target_dir or project_root or seed_base
     resolution = resolve_seed_project_path(seed, stable_base=stable_base)
     if resolution.rejected:
         print_error(
@@ -321,8 +336,9 @@ def _resolve_cli_project_dir(
             "with --project-dir pointing at the target project."
         )
         raise typer.Exit(1)
-    if detected_root is not None and target_dir is None:
-        # Central seed: the detected root *is* the project root.
+    if project_root is not None and target_dir is None:
+        # Central seed: the detected root *is* the project root; so is the
+        # current directory for a Seed in the global store.
         # context_references are documentation pointers — collapsing an
         # existing-file reference (e.g. ``src/.../foo.py``) to its parent
         # would push the runtime cwd into a subdirectory and break the
@@ -330,7 +346,7 @@ def _resolve_cli_project_dir(
         # branch above already handled any user-declared override, and
         # the containment check above still surfaces escapes. Honor the
         # detected root directly.
-        return detected_root
+        return project_root
     if resolution.path is not None:
         return _directory_for_runtime(resolution.path)
     return stable_base
