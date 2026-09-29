@@ -34,6 +34,7 @@ from ouroboros.mcp.errors import (
 )
 from ouroboros.mcp.host_context import from_sdk_context, subagent_capability_extensions
 from ouroboros.mcp.server.auth import current_auth_context, resolve_network_security
+from ouroboros.mcp.server.evolution_check_package import GenerationCheckPackages
 from ouroboros.mcp.server.evolution_pipeline_evaluation import (
     evaluate_generation_with_pipeline,
     evolve_stage1_enabled,
@@ -1859,6 +1860,10 @@ def create_ouroboros_server(
                 await event_store.initialize()
                 evolution_store_initialized = True
 
+    # Each generation's check package: prepared before its worker, read back
+    # by its evaluator (``evolution_check_package``).
+    generation_packages = GenerationCheckPackages(event_store)
+
     async def _evolution_executor(
         seed: Any,
         *,
@@ -1893,9 +1898,13 @@ def create_ouroboros_server(
             enable_decomposition=True,
             session_signal_hub=session_signal_hub,
         )
-        return await evolution_runner.execute_seed(
-            seed=seed,
+        return await generation_packages.execute(
+            evolution_runner,
+            seed,
             execution_id=execution_id,
+            worker_dir=Path(task_cwd or effective_cwd),
+            runtime_backend=execute_runtime_backend,
+            model=execution_model,
             parallel=parallel,
             externally_satisfied_acs=externally_satisfied_acs,
         )
@@ -2005,7 +2014,9 @@ def create_ouroboros_server(
 
         return _evaluation_summary_from_spec_verification(mechanical, summary, seed)
 
-    async def _evolution_evaluator(seed: Any, execution_output: str | None) -> EvaluationSummary:
+    async def _evolution_evaluator(
+        seed: Any, execution_output: str | None, *, execution_id: str | None = None
+    ) -> EvaluationSummary:
         await _ensure_evolution_store_initialized()
 
         artifact = execution_output or ""
@@ -2025,7 +2036,7 @@ def create_ouroboros_server(
             # Run spec verification to catch agent self-report lies
             verified = await _verify_spec_compliance(seed, artifact, mechanical)
             if verified is not None:
-                return verified
+                return await generation_packages.decide(verified, seed, execution_id)
             return mechanical
 
         # Fallback when the worker report has no ``### Task N`` markers: the
@@ -2045,7 +2056,7 @@ def create_ouroboros_server(
                 "acceptance criteria is attached as advisory feedback"
             ),
         )
-        return await evaluate_generation_with_pipeline(
+        fallback = await evaluate_generation_with_pipeline(
             seed=seed,
             artifact=artifact,
             project_dir=_extract_project_dir(artifact, seed=seed),
@@ -2053,6 +2064,12 @@ def create_ouroboros_server(
             semantic_model=evolve_semantic_model,
             detector_backend=evaluate_llm_backend,
             stage1_enabled=evolve_stage1,
+        )
+        # An approved fallback stands; otherwise the package decides what it covered.
+        return (
+            fallback
+            if fallback.final_approved
+            else await generation_packages.decide(fallback, seed, execution_id)
         )
 
     async def _evolution_validator(seed: Any, execution_output: str | None) -> str:
